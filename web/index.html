@@ -3,70 +3,175 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MultiMinesweeper Normal MVP</title>
+  <title>MultiMinesweeper Normal</title>
   <style>
-    :root { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 24px; background: #f7f7f7; color: #1f2937; }
-    .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-    input, button { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; background: white; }
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #111827;
+      background: #eef2f7;
+    }
+    body { margin: 0; }
+    main { max-width: 1180px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0 0 14px; font-size: 28px; }
+    .panel { background: #fff; border: 1px solid #dbe3ef; border-radius: 14px; padding: 14px; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04); }
+    .top { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 12px; }
+    .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input, button, select { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 9px; background: white; font: inherit; }
     button { cursor: pointer; }
-    button:hover { background: #f1f5f9; }
-    #status { margin: 12px 0; font-size: 14px; color: #475569; }
-    #players { display: flex; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
-    .player { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; min-width: 180px; }
-    .me { border-color: #334155; }
-    #board { display: grid; gap: 2px; width: max-content; user-select: none; }
-    .cell { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #94a3b8; border-radius: 4px; background: #cbd5e1; font-weight: 700; cursor: pointer; }
+    button:hover { background: #f8fafc; }
+    button.primary { background: #111827; color: white; border-color: #111827; }
+    button.primary:hover { background: #1f2937; }
+    button.danger { color: #991b1b; border-color: #fecaca; }
+    button.active { outline: 2px solid #111827; }
+    #status { font-size: 14px; color: #475569; }
+    #status.error { color: #b91c1c; }
+    #layout { display: grid; grid-template-columns: minmax(0, max-content) minmax(260px, 1fr); gap: 14px; align-items: start; }
+    #players { display: grid; grid-template-columns: repeat(2, minmax(190px, 1fr)); gap: 10px; margin-bottom: 10px; }
+    .player { border: 1px solid #e2e8f0; border-radius: 12px; padding: 12px; background: white; }
+    .player.me { border-color: #111827; }
+    .player .name { font-weight: 800; display: flex; justify-content: space-between; gap: 8px; }
+    .badge { font-size: 12px; border-radius: 999px; padding: 2px 8px; background: #f1f5f9; color: #475569; white-space: nowrap; }
+    .badge.ready { background: #dcfce7; color: #166534; }
+    .badge.off { background: #fee2e2; color: #991b1b; }
+    .stats { margin-top: 8px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; font-size: 13px; color: #334155; }
+    .stat { background: #f8fafc; border-radius: 8px; padding: 6px; }
+    #boardWrap { overflow: auto; max-width: 100%; padding: 10px; }
+    #board { display: grid; gap: 2px; width: max-content; user-select: none; touch-action: manipulation; }
+    .cell { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #94a3b8; border-radius: 4px; background: #cbd5e1; font-weight: 800; cursor: pointer; padding: 0; line-height: 1; }
+    .cell:hover { filter: brightness(0.98); }
     .cell.revealed { background: #ffffff; cursor: default; }
     .cell.auto { outline: 2px solid #64748b; }
     .cell.start { outline: 2px solid #94a3b8; }
     .cell.p1 { outline: 2px solid #2563eb; }
     .cell.p2 { outline: 2px solid #dc2626; }
     .cell.mine { background: #fee2e2; color: #991b1b; }
+    .cell.flag { background: #fde68a; }
+    .cell.question { background: #e0f2fe; }
     .n1 { color: #2563eb; } .n2 { color: #16a34a; } .n3 { color: #dc2626; }
     .n4 { color: #7c3aed; } .n5 { color: #b45309; } .n6 { color: #0891b2; }
     .n7 { color: #111827; } .n8 { color: #64748b; }
+    .side { display: grid; gap: 12px; }
+    .meter { height: 10px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+    .meter > div { height: 100%; width: 0%; background: #111827; transition: width .15s ease; }
     .small { font-size: 12px; color: #64748b; }
-    .error { color: #b91c1c; }
+    #events { margin: 0; padding-left: 18px; font-size: 13px; color: #334155; max-height: 230px; overflow: auto; }
+    #events li { margin: 4px 0; }
+    kbd { border: 1px solid #cbd5e1; border-bottom-width: 2px; border-radius: 5px; padding: 1px 5px; background: #f8fafc; font-size: 12px; }
+    @media (max-width: 880px) {
+      main { padding: 14px; }
+      #layout { grid-template-columns: 1fr; }
+      #players { grid-template-columns: 1fr; }
+      .cell { width: 30px; height: 30px; }
+      #board { gap: 1px; }
+    }
   </style>
 </head>
 <body>
-  <h1>MultiMinesweeper Normal MVP</h1>
-  <div class="bar">
-    <label>Room <input id="room" value="dev" /></label>
-    <label>Name <input id="name" value="Alice" /></label>
-    <button id="connect">Connect</button>
-    <button id="resign">Resign</button>
-  </div>
-  <div id="status">Disconnected</div>
-  <div id="players"></div>
-  <div id="board"></div>
+<main>
+  <h1>MultiMinesweeper Normal</h1>
+
+  <section class="top panel">
+    <div class="bar">
+      <label>Room <input id="room" value="dev" autocomplete="off" /></label>
+      <label>Name <input id="name" value="Alice" autocomplete="off" /></label>
+      <button id="connect" class="primary">Connect</button>
+      <button id="ready">Ready</button>
+      <button id="resign" class="danger">Resign</button>
+      <button id="forget">Forget Session</button>
+    </div>
+    <div class="bar">
+      <span>Input mode</span>
+      <button id="modeReveal" class="active">Reveal</button>
+      <button id="modeFlag">Flag</button>
+      <button id="modeQuestion">?</button>
+      <button id="modeChord">Chord</button>
+      <span class="small">PC: 좌클릭 공개, 우클릭 깃발, 공개 숫자 더블클릭/Chord로 주변 공개</span>
+    </div>
+    <div id="status">Disconnected</div>
+  </section>
+
+  <section id="layout">
+    <div class="panel" id="boardWrap"><div id="board"></div></div>
+    <aside class="side">
+      <div class="panel">
+        <h3>Players</h3>
+        <div id="players"></div>
+      </div>
+      <div class="panel">
+        <h3>Game</h3>
+        <div id="gameInfo" class="small">No state</div>
+        <div class="meter" title="revealed safe cells"><div id="progress"></div></div>
+      </div>
+      <div class="panel">
+        <h3>Events</h3>
+        <ol id="events"></ol>
+      </div>
+    </aside>
+  </section>
+</main>
 
 <script>
 let ws = null;
 let playerId = "";
+let token = "";
 let state = null;
+let inputMode = "reveal";
+let countdownTimer = null;
 
 const $ = (id) => document.getElementById(id);
-
 const params = new URLSearchParams(location.search);
 if (params.get("room")) $("room").value = params.get("room");
 if (params.get("name")) $("name").value = params.get("name");
 
-$("connect").onclick = () => {
+function storageKey() {
+  return `mms:${$("room").value || "dev"}:${$("name").value || "Player"}`;
+}
+
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(storageKey()) || "{}"); }
+  catch { return {}; }
+}
+
+function saveSession() {
+  if (!playerId || !token) return;
+  localStorage.setItem(storageKey(), JSON.stringify({ playerId, token }));
+}
+
+$("connect").onclick = connect;
+$("ready").onclick = () => send({ type: "ready", ready: true });
+$("resign").onclick = () => send({ type: "resign" });
+$("forget").onclick = () => {
+  localStorage.removeItem(storageKey());
+  playerId = "";
+  token = "";
+  setStatus("Stored session removed. Reconnect to take a new slot.");
+};
+
+$("modeReveal").onclick = () => setMode("reveal");
+$("modeFlag").onclick = () => setMode("flag");
+$("modeQuestion").onclick = () => setMode("question");
+$("modeChord").onclick = () => setMode("chord");
+
+function connect() {
   if (ws) ws.close();
   const room = encodeURIComponent($("room").value || "dev");
   const name = encodeURIComponent($("name").value || "Player");
+  const saved = loadSession();
+  const pidPart = saved.playerId && saved.token
+    ? `&player_id=${encodeURIComponent(saved.playerId)}&token=${encodeURIComponent(saved.token)}`
+    : "";
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(`${proto}//${location.host}/ws?room=${room}&name=${name}`);
+  ws = new WebSocket(`${proto}//${location.host}/ws?room=${room}&name=${name}${pidPart}`);
 
-  ws.onopen = () => setStatus("Connected. Waiting for another player if the game has not started.");
+  ws.onopen = () => setStatus("Connected. Ready를 누르면 게임 준비 상태가 됩니다.");
   ws.onclose = () => setStatus("Disconnected");
   ws.onerror = () => setStatus("WebSocket error", true);
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "welcome") {
       playerId = msg.playerId;
+      token = msg.token;
+      saveSession();
       setStatus(`Connected as ${playerId}`);
     } else if (msg.type === "state") {
       state = msg.state;
@@ -75,28 +180,27 @@ $("connect").onclick = () => {
       setStatus(msg.error, true);
     }
   };
-};
+}
 
-$("resign").onclick = () => {
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "resign" }));
-};
+function send(msg) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify(msg));
+}
 
-function setStatus(text, isError = false) {
-  $("status").textContent = text;
-  $("status").className = isError ? "error" : "";
+function setMode(mode) {
+  inputMode = mode;
+  for (const id of ["modeReveal", "modeFlag", "modeQuestion", "modeChord"]) $(id).classList.remove("active");
+  const map = { reveal: "modeReveal", flag: "modeFlag", question: "modeQuestion", chord: "modeChord" };
+  $(map[mode]).classList.add("active");
 }
 
 function render() {
   if (!state) return;
   renderPlayers();
   renderBoard();
-
-  const phaseText = state.phase === "waiting"
-    ? "Waiting for player 2"
-    : state.phase === "playing"
-      ? `Playing | Pool ${state.scorePool.toFixed(1)} | Idle ${Math.ceil(state.idleMsLeft / 1000)}s`
-      : `Ended | ${state.result?.message || "game ended"}`;
-  setStatus(`${phaseText} | Revealed ${state.revealedSafe}/${state.safeTotal}`);
+  renderGameInfo();
+  renderEvents();
+  startCountdown();
 }
 
 function renderPlayers() {
@@ -105,8 +209,16 @@ function renderPlayers() {
   for (const p of state.players) {
     const div = document.createElement("div");
     div.className = "player" + (p.id === playerId ? " me" : "");
-    const marker = p.id === playerId ? " (me)" : "";
-    div.innerHTML = `<b>${escapeHtml(p.name)}${marker}</b><br>Score: ${p.score.toFixed(1)}<br>Combo: ${p.combo}<br><span class="small">${p.connected ? "connected" : "disconnected"}</span>`;
+    const marker = p.id === playerId ? "me" : p.connected ? "online" : "offline";
+    const ready = state.phase === "playing" ? "playing" : p.ready ? "ready" : "not ready";
+    div.innerHTML = `
+      <div class="name"><span>${escapeHtml(p.name)}</span><span class="badge ${p.connected ? "" : "off"}">${marker}</span></div>
+      <div class="stats">
+        <div class="stat">Score<br><b>${p.score.toFixed(1)}</b></div>
+        <div class="stat">Combo<br><b>${p.combo}</b></div>
+        <div class="stat">Opened<br><b>${p.openedSafe}</b></div>
+        <div class="stat">Status<br><span class="badge ${p.ready ? "ready" : ""}">${ready}</span></div>
+      </div>`;
     box.appendChild(div);
   }
 }
@@ -117,16 +229,27 @@ function renderBoard() {
   board.innerHTML = "";
 
   const revealed = new Map();
-  for (const c of state.revealed) revealed.set(`${c.x},${c.y}`, c);
+  for (const c of state.revealed || []) revealed.set(`${c.x},${c.y}`, c);
+  const marks = new Map();
+  for (const m of state.marks || []) marks.set(`${m.x},${m.y}`, m.state);
 
   for (let y = 0; y < state.height; y++) {
     for (let x = 0; x < state.width; x++) {
       const key = `${x},${y}`;
       const c = revealed.get(key);
+      const mark = marks.get(key);
       const cell = document.createElement("button");
       cell.className = "cell";
       cell.dataset.x = x;
       cell.dataset.y = y;
+      cell.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        cycleMark(x, y, mark);
+      };
+      cell.ondblclick = () => {
+        if (c && c.value > 0) send({ type: "chord", x, y });
+      };
+      cell.onclick = () => handleCellClick(x, y, c, mark);
 
       if (c) {
         cell.classList.add("revealed");
@@ -143,17 +266,83 @@ function renderBoard() {
         } else {
           cell.textContent = "";
         }
-      } else {
-        cell.onclick = () => reveal(x, y);
+      } else if (mark === "flag") {
+        cell.textContent = "🚩";
+        cell.classList.add("flag");
+      } else if (mark === "question") {
+        cell.textContent = "?";
+        cell.classList.add("question");
       }
       board.appendChild(cell);
     }
   }
 }
 
-function reveal(x, y) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ type: "reveal", x, y }));
+function handleCellClick(x, y, revealedCell, mark) {
+  if (!state || state.phase !== "playing") return;
+  if (inputMode === "flag") return cycleMark(x, y, mark);
+  if (inputMode === "question") return send({ type: "mark", x, y, state: mark === "question" ? "" : "question" });
+  if (inputMode === "chord") return send({ type: "chord", x, y });
+  if (revealedCell && revealedCell.value > 0) return send({ type: "chord", x, y });
+  send({ type: "reveal", x, y });
+}
+
+function cycleMark(x, y, current) {
+  if (!state || state.phase === "ended") return;
+  const next = current === "flag" ? "question" : current === "question" ? "" : "flag";
+  send({ type: "mark", x, y, state: next });
+}
+
+function renderGameInfo() {
+  const progress = state.safeTotal > 0 ? state.revealedSafe / state.safeTotal : 0;
+  $("progress").style.width = `${Math.max(0, Math.min(100, progress * 100))}%`;
+
+  let phaseText = "Waiting";
+  if (state.phase === "playing") phaseText = "Playing";
+  if (state.phase === "ended") phaseText = `Ended: ${state.result?.message || "game ended"}`;
+
+  const flagCount = (state.marks || []).filter(m => m.state === "flag").length;
+  $("gameInfo").innerHTML = `
+    <b>${escapeHtml(phaseText)}</b><br>
+    Room: ${escapeHtml(state.roomId)} | Seq: ${state.seq}<br>
+    Revealed: ${state.revealedSafe}/${state.safeTotal} safe cells<br>
+    Mines: ${state.mineCount} | My flags: ${flagCount}<br>
+    Pool: ${state.scorePool.toFixed(1)} | Rate: ${state.scoreRate.toFixed(1)}/s | Idle: ${Math.ceil(state.idleMsLeft / 1000)}s
+  `;
+
+  const status = state.phase === "waiting"
+    ? "두 플레이어가 모두 Ready를 누르면 시작합니다."
+    : state.phase === "playing"
+      ? `Playing | Pool ${state.scorePool.toFixed(1)} | Idle ${Math.ceil(state.idleMsLeft / 1000)}s`
+      : `Ended | ${state.result?.message || "game ended"}`;
+  setStatus(status);
+
+  $("ready").textContent = state.phase === "ended" ? "Ready / Rematch" : "Ready";
+}
+
+function renderEvents() {
+  const list = $("events");
+  list.innerHTML = "";
+  for (const ev of [...(state.events || [])].reverse()) {
+    const li = document.createElement("li");
+    li.textContent = ev.message;
+    list.appendChild(li);
+  }
+}
+
+function startCountdown() {
+  if (countdownTimer) return;
+  countdownTimer = setInterval(() => {
+    if (!state || state.phase !== "playing") return;
+    state.scorePool += state.scoreRate * 0.25;
+    state.idleMsLeft = Math.max(0, state.idleMsLeft - 250);
+    renderGameInfo();
+  }, 250);
+}
+
+function setStatus(text, isError = false) {
+  $("status").textContent = text;
+  $("status").className = isError ? "error" : "";
 }
 
 function escapeHtml(s) {

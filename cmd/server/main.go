@@ -7,21 +7,22 @@ import (
 	"os"
 	"time"
 
-	"github.com/elecbug/multiminesweeper/internal/game"
-	"github.com/elecbug/multiminesweeper/internal/transport"
+	"github.com/elecbug/mms/internal/game"
+	"github.com/elecbug/mms/internal/transport"
 )
 
 func main() {
 	addr := env("ADDR", ":8080")
 
 	manager := game.NewManager(game.Config{
-		Width:      envInt("BOARD_WIDTH", 12),
-		Height:     envInt("BOARD_HEIGHT", 12),
-		MineCount:  envInt("MINE_COUNT", 25),
-		ScoreRate:  envFloat("SCORE_RATE", 10.0),
-		CellBonus:  envFloat("CELL_BONUS", 1.0),
-		IdleAfter:  envDuration("IDLE_AFTER", 8*time.Second),
-		MaxPlayers: 2,
+		Width:           envInt("BOARD_WIDTH", 12),
+		Height:          envInt("BOARD_HEIGHT", 12),
+		MineCount:       envInt("MINE_COUNT", 25),
+		ScoreRate:       envFloat("SCORE_RATE", 10.0),
+		CellBonus:       envFloat("CELL_BONUS", 1.0),
+		IdleAfter:       envDuration("IDLE_AFTER", 8*time.Second),
+		DisconnectGrace: envDuration("DISCONNECT_GRACE", 30*time.Second),
+		MaxPlayers:      2,
 	})
 
 	mux := http.NewServeMux()

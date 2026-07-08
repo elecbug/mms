@@ -7,19 +7,22 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/elecbug/multiminesweeper/internal/game"
+	"github.com/elecbug/mms/internal/game"
 	"github.com/gorilla/websocket"
 )
 
 type incomingMessage struct {
-	Type string `json:"type"`
-	X    int    `json:"x,omitempty"`
-	Y    int    `json:"y,omitempty"`
+	Type  string `json:"type"`
+	X     int    `json:"x,omitempty"`
+	Y     int    `json:"y,omitempty"`
+	State string `json:"state,omitempty"`
+	Ready *bool  `json:"ready,omitempty"`
 }
 
 type outgoingMessage struct {
 	Type     string         `json:"type"`
 	PlayerID string         `json:"playerId,omitempty"`
+	Token    string         `json:"token,omitempty"`
 	State    *game.Snapshot `json:"state,omitempty"`
 	Error    string         `json:"error,omitempty"`
 }
@@ -50,11 +53,13 @@ func RegisterHandlers(mux *http.ServeMux, manager *game.Manager) {
 func handleWebSocket(manager *game.Manager, w http.ResponseWriter, r *http.Request) {
 	roomID := r.URL.Query().Get("room")
 	name := r.URL.Query().Get("name")
+	playerID := r.URL.Query().Get("player_id")
+	token := r.URL.Query().Get("token")
 	if roomID == "" {
 		roomID = "dev"
 	}
 
-	room, player, err := manager.JoinRoom(roomID, name)
+	room, player, err := manager.JoinRoom(roomID, name, playerID, token)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -82,8 +87,9 @@ func handleWebSocket(manager *game.Manager, w http.ResponseWriter, r *http.Reque
 		}
 	}()
 
-	out <- outgoingMessage{Type: "welcome", PlayerID: player.ID}
-	out <- outgoingMessage{Type: "state", State: ptr(room.Snapshot())}
+	out <- outgoingMessage{Type: "welcome", PlayerID: player.ID, Token: player.Token}
+	snap := room.SnapshotFor(player.ID)
+	out <- outgoingMessage{Type: "state", State: &snap}
 
 	forwardDone := make(chan struct{})
 	go func() {
@@ -97,7 +103,7 @@ func handleWebSocket(manager *game.Manager, w http.ResponseWriter, r *http.Reque
 		}
 	}()
 
-	conn.SetReadLimit(1024)
+	conn.SetReadLimit(2048)
 	_ = conn.SetReadDeadline(time.Now().Add(70 * time.Second))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(70 * time.Second))
@@ -117,8 +123,24 @@ func handleWebSocket(manager *game.Manager, w http.ResponseWriter, r *http.Reque
 		}
 
 		switch msg.Type {
+		case "ready":
+			ready := true
+			if msg.Ready != nil {
+				ready = *msg.Ready
+			}
+			if err := room.SetReady(player.ID, ready); err != nil {
+				safeSend(out, outgoingMessage{Type: "error", Error: err.Error()}, done)
+			}
+		case "mark":
+			if err := room.ToggleMark(player.ID, msg.X, msg.Y, msg.State); err != nil {
+				safeSend(out, outgoingMessage{Type: "error", Error: err.Error()}, done)
+			}
 		case "reveal":
 			if err := room.Reveal(player.ID, msg.X, msg.Y); err != nil {
+				safeSend(out, outgoingMessage{Type: "error", Error: err.Error()}, done)
+			}
+		case "chord":
+			if err := room.Chord(player.ID, msg.X, msg.Y); err != nil {
 				safeSend(out, outgoingMessage{Type: "error", Error: err.Error()}, done)
 			}
 		case "resign":
@@ -156,5 +178,3 @@ func safeSend(out chan<- outgoingMessage, msg outgoingMessage, done <-chan struc
 	default:
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

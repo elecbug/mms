@@ -3,6 +3,7 @@ package game
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	mathrand "math/rand"
 	"sort"
@@ -14,6 +15,9 @@ const (
 	PhaseWaiting = "waiting"
 	PhasePlaying = "playing"
 	PhaseEnded   = "ended"
+
+	MarkFlag     = "flag"
+	MarkQuestion = "question"
 )
 
 type Room struct {
@@ -30,6 +34,7 @@ type Room struct {
 
 	players map[string]*Player
 	result  *Result
+	events  []Event
 
 	revealedSafe int
 	safeTotal    int
@@ -53,15 +58,32 @@ func NewRoom(id string, cfg Config) *Room {
 		players:     make(map[string]*Player),
 		subscribers: make(map[string]chan Snapshot),
 		stopTicker:  make(chan struct{}),
+		safeTotal:   cfg.Width*cfg.Height - cfg.MineCount,
 	}
-	r.generateBoard()
+	r.logLocked("room", "", "room created")
 	go r.idleLoop()
 	return r
 }
 
-func (r *Room) Join(name string) (*Player, error) {
+func (r *Room) Join(name, requestedPlayerID, token string) (*Player, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	if requestedPlayerID != "" || token != "" {
+		p, ok := r.players[requestedPlayerID]
+		if !ok || p.Token == "" || p.Token != token {
+			return nil, ErrInvalidToken
+		}
+		if name != "" {
+			p.Name = name
+		}
+		p.Connected = true
+		p.DisconnectedAt = time.Time{}
+		r.bumpLocked()
+		r.logLocked("reconnect", p.ID, fmt.Sprintf("%s reconnected", p.Name))
+		r.broadcastLocked()
+		return clonePlayerWithToken(p), nil
+	}
 
 	if name == "" {
 		name = fmt.Sprintf("Player %d", len(r.players)+1)
@@ -70,22 +92,25 @@ func (r *Room) Join(name string) (*Player, error) {
 		return nil, ErrRoomFull
 	}
 	id := fmt.Sprintf("p%d", len(r.players)+1)
-	p := &Player{ID: id, Name: name, Connected: true}
+	p := &Player{
+		ID:        id,
+		Name:      name,
+		Connected: true,
+		Token:     newToken(),
+		Marks:     make(map[int]string),
+	}
 	r.players[id] = p
 	r.bumpLocked()
-
-	if len(r.players) == r.cfg.MaxPlayers && r.phase == PhaseWaiting {
-		r.startLocked()
-	}
-
-	return clonePlayer(p), nil
+	r.logLocked("join", id, fmt.Sprintf("%s joined", name))
+	r.broadcastLocked()
+	return clonePlayerWithToken(p), nil
 }
 
 func (r *Room) Subscribe(playerID string) (<-chan Snapshot, func()) {
 	ch := make(chan Snapshot, 16)
 	r.mu.Lock()
 	r.subscribers[playerID] = ch
-	ch <- r.snapshotLocked(time.Now())
+	ch <- r.snapshotLocked(time.Now(), playerID)
 	r.mu.Unlock()
 
 	cancel := func() {
@@ -93,15 +118,76 @@ func (r *Room) Subscribe(playerID string) (<-chan Snapshot, func()) {
 		if current, ok := r.subscribers[playerID]; ok && current == ch {
 			delete(r.subscribers, playerID)
 			close(ch)
+			if p, ok := r.players[playerID]; ok {
+				p.Connected = false
+				p.DisconnectedAt = time.Now()
+				r.logLocked("disconnect", playerID, fmt.Sprintf("%s disconnected", p.Name))
+			}
+			r.bumpLocked()
+			r.broadcastLocked()
 		}
-		if p, ok := r.players[playerID]; ok {
-			p.Connected = false
-		}
-		r.bumpLocked()
-		r.broadcastLocked()
 		r.mu.Unlock()
 	}
 	return ch, cancel
+}
+
+func (r *Room) SetReady(playerID string, ready bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	p, ok := r.players[playerID]
+	if !ok {
+		return fmt.Errorf("unknown player")
+	}
+	if r.phase == PhasePlaying {
+		return fmt.Errorf("game is already playing")
+	}
+	p.Ready = ready
+	if ready {
+		r.logLocked("ready", playerID, fmt.Sprintf("%s is ready", p.Name))
+	} else {
+		r.logLocked("unready", playerID, fmt.Sprintf("%s is not ready", p.Name))
+	}
+
+	if r.canStartLocked() {
+		r.startLocked()
+	}
+
+	r.bumpLocked()
+	r.broadcastLocked()
+	return nil
+}
+
+func (r *Room) ToggleMark(playerID string, x, y int, state string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	p, ok := r.players[playerID]
+	if !ok {
+		return fmt.Errorf("unknown player")
+	}
+	if !r.inBounds(x, y) {
+		return fmt.Errorf("cell is out of bounds")
+	}
+	idx := r.index(x, y)
+	if len(r.board) > 0 && r.board[idx].Revealed {
+		return fmt.Errorf("cannot mark a revealed cell")
+	}
+	if p.Marks == nil {
+		p.Marks = make(map[int]string)
+	}
+	switch state {
+	case "":
+		delete(p.Marks, idx)
+	case MarkFlag, MarkQuestion:
+		p.Marks[idx] = state
+	default:
+		return fmt.Errorf("invalid mark state")
+	}
+
+	r.bumpLocked()
+	r.broadcastLocked()
+	return nil
 }
 
 func (r *Room) Reveal(playerID string, x, y int) error {
@@ -116,54 +202,104 @@ func (r *Room) Reveal(playerID string, x, y int) error {
 	if !ok {
 		return fmt.Errorf("unknown player")
 	}
+	if !p.Connected {
+		return fmt.Errorf("player is disconnected")
+	}
 	if !r.inBounds(x, y) {
+		p.InvalidActs++
 		return fmt.Errorf("cell is out of bounds")
 	}
 	idx := r.index(x, y)
+	if p.Marks != nil && p.Marks[idx] == MarkFlag {
+		p.InvalidActs++
+		return fmt.Errorf("cell is flagged")
+	}
 	cell := &r.board[idx]
 	if cell.Revealed {
+		p.InvalidActs++
 		return fmt.Errorf("cell is already revealed")
 	}
 
 	r.accrueScorePoolLocked(now)
 
 	if cell.Mine {
-		cell.Revealed = true
-		cell.OpenedBy = playerID
-		winnerID := r.otherPlayerIDLocked(playerID)
-		r.result = &Result{
-			WinnerID: winnerID,
-			LoserID:  playerID,
-			Reason:   "mine",
-			Message:  fmt.Sprintf("%s clicked a mine", p.Name),
-		}
-		r.phase = PhaseEnded
+		r.loseByMineLocked(playerID, idx)
 		r.bumpLocked()
 		r.broadcastLocked()
 		return nil
 	}
 
 	opened := r.revealFloodLocked(x, y, playerID)
-	multiplier := comboMultiplier(p.Combo)
-	gain := r.scorePool*multiplier + float64(opened)*r.cfg.CellBonus
-	p.Score += gain
+	r.applyScoreLocked(p, opened, now, "reveal")
 
-	if r.lastScoringPlayer == playerID {
-		p.Combo++
-	} else {
-		p.Combo = 1
+	if r.revealedSafe >= r.safeTotal {
+		r.endByScoreLocked()
 	}
-	for id, other := range r.players {
-		if id != playerID {
-			other.Combo = 0
+
+	r.bumpLocked()
+	r.broadcastLocked()
+	return nil
+}
+
+func (r *Room) Chord(playerID string, x, y int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	now := time.Now()
+	if r.phase != PhasePlaying {
+		return fmt.Errorf("game is not playing")
+	}
+	p, ok := r.players[playerID]
+	if !ok {
+		return fmt.Errorf("unknown player")
+	}
+	if !r.inBounds(x, y) {
+		p.InvalidActs++
+		return fmt.Errorf("cell is out of bounds")
+	}
+	idx := r.index(x, y)
+	base := r.board[idx]
+	if !base.Revealed || base.Mine || base.Value <= 0 {
+		p.InvalidActs++
+		return fmt.Errorf("chord requires a revealed numbered cell")
+	}
+	flagCount := r.countPlayerFlagsAroundLocked(p, x, y)
+	if flagCount != base.Value {
+		p.InvalidActs++
+		return fmt.Errorf("flag count does not match cell number")
+	}
+
+	r.accrueScorePoolLocked(now)
+
+	opened := 0
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			nx, ny := x+dx, y+dy
+			if !r.inBounds(nx, ny) {
+				continue
+			}
+			nidx := r.index(nx, ny)
+			if r.board[nidx].Revealed || p.Marks[nidx] == MarkFlag {
+				continue
+			}
+			if r.board[nidx].Mine {
+				r.loseByMineLocked(playerID, nidx)
+				r.bumpLocked()
+				r.broadcastLocked()
+				return nil
+			}
+			opened += r.revealFloodLocked(nx, ny, playerID)
 		}
 	}
+	if opened == 0 {
+		p.InvalidActs++
+		return fmt.Errorf("no cells opened")
+	}
 
-	r.scorePool = 0
-	r.lastScoreTime = now
-	r.lastValidAction = now
-	r.lastScoringPlayer = playerID
-
+	r.applyScoreLocked(p, opened, now, "chord")
 	if r.revealedSafe >= r.safeTotal {
 		r.endByScoreLocked()
 	}
@@ -182,23 +318,49 @@ func (r *Room) Resign(playerID string) {
 	winnerID := r.otherPlayerIDLocked(playerID)
 	r.result = &Result{WinnerID: winnerID, LoserID: playerID, Reason: "resign", Message: "player resigned"}
 	r.phase = PhaseEnded
+	r.logLocked("end", playerID, "player resigned")
 	r.bumpLocked()
 	r.broadcastLocked()
 }
 
-func (r *Room) Snapshot() Snapshot {
+func (r *Room) SnapshotFor(playerID string) Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.snapshotLocked(time.Now())
+	return r.snapshotLocked(time.Now(), playerID)
+}
+
+func (r *Room) canStartLocked() bool {
+	if r.phase == PhasePlaying || len(r.players) != r.cfg.MaxPlayers {
+		return false
+	}
+	for _, p := range r.players {
+		if !p.Connected || !p.Ready {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Room) startLocked() {
 	now := time.Now()
 	r.phase = PhasePlaying
+	r.result = nil
+	r.events = nil
 	r.scorePool = 0
 	r.lastScoreTime = now
 	r.lastValidAction = now
 	r.lastScoringPlayer = ""
+	r.generateBoardLocked()
+	for _, p := range r.players {
+		p.Score = 0
+		p.Combo = 0
+		p.Ready = false
+		p.OpenedSafe = 0
+		p.SafeClicks = 0
+		p.InvalidActs = 0
+		p.Marks = make(map[int]string)
+	}
+	r.logLocked("start", "", "normal game started")
 }
 
 func (r *Room) idleLoop() {
@@ -207,22 +369,27 @@ func (r *Room) idleLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			r.handleIdleReveal()
+			r.handlePeriodicChecks()
 		case <-r.stopTicker:
 			return
 		}
 	}
 }
 
-func (r *Room) handleIdleReveal() {
+func (r *Room) handlePeriodicChecks() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	now := time.Now()
-	if r.phase != PhasePlaying || r.cfg.IdleAfter <= 0 {
+	if r.phase != PhasePlaying {
 		return
 	}
-	if now.Sub(r.lastValidAction) < r.cfg.IdleAfter {
+	if r.handleDisconnectLossLocked(now) {
+		r.bumpLocked()
+		r.broadcastLocked()
+		return
+	}
+	if r.cfg.IdleAfter <= 0 || now.Sub(r.lastValidAction) < r.cfg.IdleAfter {
 		return
 	}
 
@@ -243,6 +410,7 @@ func (r *Room) handleIdleReveal() {
 	r.board[idx].Revealed = true
 	r.board[idx].OpenedBy = "auto"
 	r.revealedSafe++
+	r.clearMarksLocked(idx)
 
 	// Waiting must not become a dominant strategy.
 	r.scorePool = 0
@@ -252,6 +420,7 @@ func (r *Room) handleIdleReveal() {
 	for _, p := range r.players {
 		p.Combo = 0
 	}
+	r.logLocked("auto", "", "idle timeout revealed one safe cell")
 
 	if r.revealedSafe >= r.safeTotal {
 		r.endByScoreLocked()
@@ -261,9 +430,29 @@ func (r *Room) handleIdleReveal() {
 	r.broadcastLocked()
 }
 
-func (r *Room) generateBoard() {
+func (r *Room) handleDisconnectLossLocked(now time.Time) bool {
+	if r.cfg.DisconnectGrace <= 0 {
+		return false
+	}
+	for _, p := range r.players {
+		if p.Connected || p.DisconnectedAt.IsZero() {
+			continue
+		}
+		if now.Sub(p.DisconnectedAt) >= r.cfg.DisconnectGrace {
+			winnerID := r.otherPlayerIDLocked(p.ID)
+			r.result = &Result{WinnerID: winnerID, LoserID: p.ID, Reason: "disconnect", Message: fmt.Sprintf("%s disconnected too long", p.Name)}
+			r.phase = PhaseEnded
+			r.logLocked("end", p.ID, r.result.Message)
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Room) generateBoardLocked() {
 	r.board = make([]Cell, r.cfg.Width*r.cfg.Height)
 	r.safeTotal = r.cfg.Width*r.cfg.Height - r.cfg.MineCount
+	r.revealedSafe = 0
 
 	excluded := map[int]bool{}
 	cx, cy := r.cfg.Width/2, r.cfg.Height/2
@@ -326,6 +515,7 @@ func (r *Room) revealFloodLocked(x, y int, openedBy string) int {
 		seen[idx] = true
 		r.board[idx].Revealed = true
 		r.board[idx].OpenedBy = openedBy
+		r.clearMarksLocked(idx)
 		opened++
 		r.revealedSafe++
 
@@ -343,11 +533,57 @@ func (r *Room) revealFloodLocked(x, y int, openedBy string) int {
 	return opened
 }
 
+func (r *Room) applyScoreLocked(p *Player, opened int, now time.Time, action string) {
+	multiplier := comboMultiplier(p.Combo)
+	gain := r.scorePool*multiplier + float64(opened)*r.cfg.CellBonus
+	p.Score += gain
+	p.OpenedSafe += opened
+	p.SafeClicks++
+
+	if r.lastScoringPlayer == p.ID {
+		p.Combo++
+	} else {
+		p.Combo = 1
+	}
+	for id, other := range r.players {
+		if id != p.ID {
+			other.Combo = 0
+		}
+	}
+
+	r.scorePool = 0
+	r.lastScoreTime = now
+	r.lastValidAction = now
+	r.lastScoringPlayer = p.ID
+	r.logLocked(action, p.ID, fmt.Sprintf("%s opened %d safe cell(s) and gained %.1f", p.Name, opened, gain))
+}
+
+func (r *Room) loseByMineLocked(playerID string, idx int) {
+	p := r.players[playerID]
+	r.board[idx].Revealed = true
+	r.board[idx].OpenedBy = playerID
+	r.clearMarksLocked(idx)
+	winnerID := r.otherPlayerIDLocked(playerID)
+	name := playerID
+	if p != nil {
+		name = p.Name
+	}
+	r.result = &Result{
+		WinnerID: winnerID,
+		LoserID:  playerID,
+		Reason:   "mine",
+		Message:  fmt.Sprintf("%s clicked a mine", name),
+	}
+	r.phase = PhaseEnded
+	r.logLocked("end", playerID, r.result.Message)
+}
+
 func (r *Room) endByScoreLocked() {
 	players := make([]*Player, 0, len(r.players))
 	for _, p := range r.players {
 		players = append(players, p)
 	}
+	sort.Slice(players, func(i, j int) bool { return players[i].ID < players[j].ID })
 	if len(players) == 0 {
 		r.result = &Result{Reason: "draw", Message: "no players"}
 	} else if len(players) == 1 {
@@ -360,6 +596,7 @@ func (r *Room) endByScoreLocked() {
 		r.result = &Result{Reason: "draw", Message: "scores are tied"}
 	}
 	r.phase = PhaseEnded
+	r.logLocked("end", r.result.WinnerID, r.result.Message)
 }
 
 func (r *Room) accrueScorePoolLocked(now time.Time) {
@@ -377,7 +614,7 @@ func (r *Room) accrueScorePoolLocked(now time.Time) {
 	}
 }
 
-func (r *Room) snapshotLocked(now time.Time) Snapshot {
+func (r *Room) snapshotLocked(now time.Time, viewerID string) Snapshot {
 	pool := r.scorePool
 	if r.phase == PhasePlaying && !r.lastScoreTime.IsZero() {
 		pool += now.Sub(r.lastScoreTime).Seconds() * r.cfg.ScoreRate
@@ -389,18 +626,42 @@ func (r *Room) snapshotLocked(now time.Time) Snapshot {
 	}
 	sort.Slice(players, func(i, j int) bool { return players[i].ID < players[j].ID })
 
-	revealed := make([]PublicCell, 0, r.revealedSafe)
-	for y := 0; y < r.cfg.Height; y++ {
-		for x := 0; x < r.cfg.Width; x++ {
-			c := r.board[r.index(x, y)]
-			if c.Revealed {
-				value := c.Value
-				if c.Mine && r.phase == PhaseEnded {
-					value = -1
+	revealed := make([]PublicCell, 0, r.revealedSafe+r.cfg.MineCount)
+	if len(r.board) > 0 {
+		for y := 0; y < r.cfg.Height; y++ {
+			for x := 0; x < r.cfg.Width; x++ {
+				c := r.board[r.index(x, y)]
+				if c.Revealed || (r.phase == PhaseEnded && c.Mine) {
+					value := c.Value
+					openedBy := c.OpenedBy
+					if c.Mine {
+						value = -1
+						if openedBy == "" {
+							openedBy = "mine"
+						}
+					}
+					revealed = append(revealed, PublicCell{X: x, Y: y, Value: value, OpenedBy: openedBy})
 				}
-				revealed = append(revealed, PublicCell{X: x, Y: y, Value: value, OpenedBy: c.OpenedBy})
 			}
 		}
+	}
+
+	marks := make([]PublicMark, 0)
+	if p, ok := r.players[viewerID]; ok && p.Marks != nil {
+		for idx, state := range p.Marks {
+			if state == "" {
+				continue
+			}
+			x := idx % r.cfg.Width
+			y := idx / r.cfg.Width
+			marks = append(marks, PublicMark{X: x, Y: y, State: state})
+		}
+		sort.Slice(marks, func(i, j int) bool {
+			if marks[i].Y == marks[j].Y {
+				return marks[i].X < marks[j].X
+			}
+			return marks[i].Y < marks[j].Y
+		})
 	}
 
 	idleLeft := int64(0)
@@ -420,18 +681,21 @@ func (r *Room) snapshotLocked(now time.Time) Snapshot {
 		MineCount:    r.cfg.MineCount,
 		Players:      players,
 		Revealed:     revealed,
+		Marks:        marks,
 		RevealedSafe: r.revealedSafe,
 		SafeTotal:    r.safeTotal,
 		ScorePool:    pool,
 		ScoreRate:    r.cfg.ScoreRate,
 		IdleMsLeft:   idleLeft,
 		Result:       cloneResult(r.result),
+		Events:       cloneEvents(r.events),
 	}
 }
 
 func (r *Room) broadcastLocked() {
-	snap := r.snapshotLocked(time.Now())
+	now := time.Now()
 	for id, ch := range r.subscribers {
+		snap := r.snapshotLocked(now, id)
 		select {
 		case ch <- snap:
 		default:
@@ -439,6 +703,35 @@ func (r *Room) broadcastLocked() {
 			delete(r.subscribers, id)
 			close(ch)
 		}
+	}
+}
+
+func (r *Room) clearMarksLocked(idx int) {
+	for _, p := range r.players {
+		delete(p.Marks, idx)
+	}
+}
+
+func (r *Room) countPlayerFlagsAroundLocked(p *Player, x, y int) int {
+	count := 0
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			nx, ny := x+dx, y+dy
+			if r.inBounds(nx, ny) && p.Marks[r.index(nx, ny)] == MarkFlag {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func (r *Room) logLocked(kind, playerID, message string) {
+	r.events = append(r.events, Event{Seq: r.seq, AtUnixMs: time.Now().UnixMilli(), Type: kind, PlayerID: playerID, Message: message})
+	if len(r.events) > 12 {
+		r.events = r.events[len(r.events)-12:]
 	}
 }
 
@@ -488,6 +781,19 @@ func clonePlayer(p *Player) *Player {
 		return nil
 	}
 	cp := *p
+	cp.Token = ""
+	cp.Marks = nil
+	cp.DisconnectedAt = time.Time{}
+	return &cp
+}
+
+func clonePlayerWithToken(p *Player) *Player {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.Marks = nil
+	cp.DisconnectedAt = time.Time{}
 	return &cp
 }
 
@@ -499,10 +805,24 @@ func cloneResult(r *Result) *Result {
 	return &cp
 }
 
+func cloneEvents(events []Event) []Event {
+	out := make([]Event, len(events))
+	copy(out, events)
+	return out
+}
+
 func secureSeed() int64 {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return time.Now().UnixNano()
 	}
 	return int64(binary.LittleEndian.Uint64(b[:]))
+}
+
+func newToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
 }

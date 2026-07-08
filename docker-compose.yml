@@ -11,3 +11,4 @@ services:
       SCORE_RATE: "10"
       CELL_BONUS: "0"
       IDLE_AFTER: "8"
+      DISCONNECT_GRACE: "30"

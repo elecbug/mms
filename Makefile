@@ -1,4 +1,4 @@
-.PHONY: run test fmt docker-up docker-down docker-build
+.PHONY: run test fmt docker-up docker-down docker-build clean
 
 run:
 	go run ./cmd/server
@@ -17,3 +17,6 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+clean:
+	rm -f multiminesweeper

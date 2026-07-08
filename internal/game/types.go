@@ -3,13 +3,14 @@ package game
 import "time"
 
 type Config struct {
-	Width      int
-	Height     int
-	MineCount  int
-	ScoreRate  float64
-	CellBonus  float64
-	IdleAfter  time.Duration
-	MaxPlayers int
+	Width           int
+	Height          int
+	MineCount       int
+	ScoreRate       float64
+	CellBonus       float64
+	IdleAfter       time.Duration
+	DisconnectGrace time.Duration
+	MaxPlayers      int
 }
 
 type Cell struct {
@@ -26,18 +27,39 @@ type PublicCell struct {
 	OpenedBy string `json:"openedBy,omitempty"`
 }
 
+type PublicMark struct {
+	X     int    `json:"x"`
+	Y     int    `json:"y"`
+	State string `json:"state"`
+}
+
 type Player struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	Score     float64 `json:"score"`
-	Combo     int     `json:"combo"`
-	Connected bool    `json:"connected"`
+	ID             string         `json:"id"`
+	Name           string         `json:"name"`
+	Score          float64        `json:"score"`
+	Combo          int            `json:"combo"`
+	Connected      bool           `json:"connected"`
+	Ready          bool           `json:"ready"`
+	OpenedSafe     int            `json:"openedSafe"`
+	SafeClicks     int            `json:"safeClicks"`
+	InvalidActs    int            `json:"invalidActs"`
+	Token          string         `json:"-"`
+	Marks          map[int]string `json:"-"`
+	DisconnectedAt time.Time      `json:"-"`
 }
 
 type Result struct {
 	WinnerID string `json:"winnerId,omitempty"`
 	LoserID  string `json:"loserId,omitempty"`
 	Reason   string `json:"reason"`
+	Message  string `json:"message"`
+}
+
+type Event struct {
+	Seq      uint64 `json:"seq"`
+	AtUnixMs int64  `json:"atUnixMs"`
+	Type     string `json:"type"`
+	PlayerID string `json:"playerId,omitempty"`
 	Message  string `json:"message"`
 }
 
@@ -50,10 +72,12 @@ type Snapshot struct {
 	MineCount    int          `json:"mineCount"`
 	Players      []*Player    `json:"players"`
 	Revealed     []PublicCell `json:"revealed"`
+	Marks        []PublicMark `json:"marks"`
 	RevealedSafe int          `json:"revealedSafe"`
 	SafeTotal    int          `json:"safeTotal"`
 	ScorePool    float64      `json:"scorePool"`
 	ScoreRate    float64      `json:"scoreRate"`
 	IdleMsLeft   int64        `json:"idleMsLeft"`
 	Result       *Result      `json:"result,omitempty"`
+	Events       []Event      `json:"events"`
 }

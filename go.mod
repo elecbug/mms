@@ -1,4 +1,4 @@
-module github.com/elecbug/multiminesweeper
+module github.com/elecbug/mms
 
 go 1.23
 
