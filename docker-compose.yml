@@ -1,0 +1,13 @@
+services:
+  multiminesweeper:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ADDR: ":8080"
+      BOARD_WIDTH: "12"
+      BOARD_HEIGHT: "12"
+      MINE_COUNT: "25"
+      SCORE_RATE: "10"
+      CELL_BONUS: "0"
+      IDLE_AFTER: "8"
