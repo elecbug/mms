@@ -1,2 +1,2 @@
-# mms
-Multi-minesweeper game
+# MMS
+MULTI MINESWEEPER GAME
