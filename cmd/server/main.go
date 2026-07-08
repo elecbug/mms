@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/example/multiminesweeper/internal/game"
-	"github.com/example/multiminesweeper/internal/transport"
+	"github.com/elecbug/multiminesweeper/internal/game"
+	"github.com/elecbug/multiminesweeper/internal/transport"
 )
 
 func main() {

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/example/multiminesweeper/internal/game"
+	"github.com/elecbug/multiminesweeper/internal/game"
 	"github.com/gorilla/websocket"
 )
 

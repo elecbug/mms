@@ -1,4 +1,4 @@
-module github.com/example/multiminesweeper
+module github.com/elecbug/multiminesweeper
 
 go 1.23
 
